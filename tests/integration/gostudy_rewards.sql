@@ -1,4 +1,4 @@
--- Run with psql against a disposable database after applying schema v16.
+-- Run with psql against a disposable database after applying schema v17.
 -- Every write is rolled back.
 BEGIN;
 
@@ -113,7 +113,8 @@ END;
 $$;
 
 -- Every hour reward created through verified-session processing receives one
--- inventory item through the post-v16 reward trigger.
+-- inventory item and one notification outbox row through the post-v16/v17
+-- reward triggers.
 DO $$
 BEGIN
   IF EXISTS (
@@ -126,6 +127,22 @@ BEGIN
       AND inventory.hour_rewardid IS NULL
   ) THEN
     RAISE EXCEPTION 'verified-session to inventory assertion failed';
+  END IF;
+END;
+$$;
+
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM gostudy_hour_rewards AS rewards
+    LEFT JOIN gostudy_reward_notifications AS notifications
+      ON notifications.hour_rewardid = rewards.rewardid
+    WHERE
+      rewards.userid IN (-15001, -15002, -15003, -15004)
+      AND notifications.notificationid IS NULL
+  ) THEN
+    RAISE EXCEPTION 'verified-session to notification assertion failed';
   END IF;
 END;
 $$;

@@ -10,10 +10,11 @@ import socket
 import sys
 from pathlib import Path
 from typing import Callable
+from urllib.parse import urlsplit
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-EXPECTED_SCHEMA_VERSION = 16
+EXPECTED_SCHEMA_VERSION = 17
 EXPECTED_PYTHON = (3, 11, 16)
 PLACEHOLDERS = ("CHANGE_ME", "REPLACE_WITH_")
 EXPECTED_DEPENDENCIES = {
@@ -109,6 +110,26 @@ def load_configuration(path: Path, *, follow_includes: bool) -> configparser.Con
 
 def configured_feature(parser: configparser.ConfigParser, section: str) -> bool:
     return parser.getboolean(section, "enabled", fallback=False)
+
+
+def web_inventory_link_configured(value: str) -> bool:
+    """Validate a web base URL without returning or reporting its value."""
+    candidate = value.strip().rstrip("/")
+    if not candidate or any(ord(character) < 32 for character in candidate):
+        return False
+    try:
+        parsed = urlsplit(candidate)
+        _ = parsed.port
+    except ValueError:
+        return False
+    return (
+        parsed.scheme.lower() in {"http", "https"}
+        and parsed.hostname is not None
+        and parsed.username is None
+        and parsed.password is None
+        and not parsed.query
+        and not parsed.fragment
+    )
 
 
 def valid_secret(value: str) -> bool:
@@ -243,6 +264,25 @@ def check_runtime_config(reporter: Reporter, config_path: Path):
             f"premium={'enabled' if premium else 'disabled'}, "
             f"topgg={'enabled' if topgg else 'disabled'}."
         )
+
+    try:
+        notifications = parser.getboolean(
+            "GO_STUDY",
+            "notifications_enabled",
+            fallback=False,
+        )
+    except ValueError:
+        reporter.fail("Go Study reward notifications must be enabled or disabled.")
+    else:
+        reporter.ok(
+            f"reward notifications = {'enabled' if notifications else 'disabled'}."
+        )
+
+    web_url = parser.get("GO_STUDY", "web_url", fallback="")
+    reporter.ok(
+        "web inventory link = "
+        f"{'configured' if web_inventory_link_configured(web_url) else 'not configured'}."
+    )
     return parser
 
 

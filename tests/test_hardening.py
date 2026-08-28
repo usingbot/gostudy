@@ -62,6 +62,7 @@ class ConfigHardeningTests(unittest.TestCase):
         self.assertFalse(feature_enabled(parser, "ANALYTICS"))
         self.assertFalse(feature_enabled(parser, "PREMIUM"))
         self.assertFalse(feature_enabled(parser, "TOPGG"))
+        self.assertFalse(parser.getboolean("GO_STUDY", "notifications_enabled"))
         self.assertNotIn("analytics", initial_extensions(parser))
 
         modules = importlib.import_module("modules")
@@ -120,16 +121,16 @@ class PreflightTests(unittest.TestCase):
     def test_latest_schema_version(self):
         cursor = mock.MagicMock()
         cursor.__enter__.return_value = cursor
-        cursor.fetchone.return_value = (16,)
+        cursor.fetchone.return_value = (17,)
         connection = mock.Mock()
         connection.cursor.return_value = cursor
-        self.assertEqual(preflight.latest_schema_version(connection), 16)
-        self.assertTrue(preflight.schema_version_is_current(16))
-        self.assertFalse(preflight.schema_version_is_current(15))
+        self.assertEqual(preflight.latest_schema_version(connection), 17)
+        self.assertTrue(preflight.schema_version_is_current(17))
+        self.assertFalse(preflight.schema_version_is_current(16))
 
-    def test_schema_declares_version_16(self):
+    def test_schema_declares_version_17(self):
         schema = (ROOT / "data/schema.sql").read_text(encoding="utf-8")
-        self.assertIn("INSERT INTO VersionHistory (version, author) VALUES (16,", schema)
+        self.assertIn("INSERT INTO VersionHistory (version, author) VALUES (17,", schema)
 
 
 class SupervisorTests(unittest.TestCase):

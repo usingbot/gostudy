@@ -1,4 +1,4 @@
--- Run with psql against a disposable database after applying schema v16.
+-- Run with psql against a disposable database after applying schema v17.
 -- Every write is rolled back.
 BEGIN;
 

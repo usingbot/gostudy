@@ -51,7 +51,7 @@ sudo -u postgres createuser --pwprompt gostudy
 sudo -u postgres createdb --owner=gostudy gostudy
 ```
 
-For a new, empty database, load `data/schema.sql` exactly once. It already represents schema version 16, so do not replay any historical migration after it.
+For a new, empty database, load `data/schema.sql` exactly once. It already represents schema version 17, so do not replay any historical migration after it.
 
 ```bash
 psql "dbname=gostudy user=gostudy host=127.0.0.1" \
@@ -64,7 +64,7 @@ psql "dbname=gostudy user=gostudy host=127.0.0.1" \
   --command 'SELECT version FROM VersionHistory ORDER BY time DESC LIMIT 1;'
 ```
 
-The verification command must print `16`.
+The verification command must print `17`.
 
 ### Configure local runtime files
 
@@ -84,8 +84,11 @@ The local template intentionally defaults these optional integrations off:
 - `ANALYTICS.enabled = false`: the analytics extension and worker are not required locally.
 - `PREMIUM.enabled = false`: legacy gems, premium commands, and the gem webhook are not required by Go Study.
 - `TOPGG.enabled = false`: Top.gg posting and its webhook remain inactive.
+- `GO_STUDY.notifications_enabled = false`: durable reward notifications queue safely, but no Discord delivery worker runs until explicitly enabled.
 
 Blank or malformed optional premium webhook configuration is ignored safely. Default skins and statistics continue to work without Premium; user skin purchasing and premium server branding are unavailable while it is disabled.
+
+To deliver new verified-hour reward notifications, set `notifications_enabled = true` in the ignored `config/bot.conf`. `GO_STUDY.web_url` may be blank. When it is a valid HTTP(S) base URL, DMs include a URL-only **View Inventory** button pointing to `{web_url}/inventory`; malformed values are redacted and the button is omitted.
 
 ## Validate and run
 
@@ -132,15 +135,17 @@ psql "dbname=gostudy user=gostudy host=127.0.0.1" \
   --command 'SELECT version, time, author FROM VersionHistory ORDER BY time DESC LIMIT 1;'
 ```
 
-If and only if that query reports version 15 and the reviewed target is version 16:
+If and only if that query reports version 16 and the reviewed target is version 17:
 
 ```bash
 psql "dbname=gostudy user=gostudy host=127.0.0.1" \
   --set ON_ERROR_STOP=on \
-  --file data/migration/v15-v16/migration.sql
+  --file data/migration/v16-v17/migration.sql
 ```
 
-Migrations are not idempotent. The launcher and preflight intentionally never modify the database.
+The v16-v17 migration creates an initially empty transactional notification outbox and installs a second `AFTER INSERT` trigger on `gostudy_hour_rewards`. It does not backfill existing rewards. The inventory and notification triggers both run within the hour-reward transaction, so a committed new entitlement has both its granted inventory item and its outbox row.
+
+Migrations are not idempotent. The launcher and preflight intentionally never modify the database. Deploy schema v17 before running v17 application code; the bot data registry expects the new table even while delivery is disabled. For rollback, disable notification workers first. Rolling application code back while leaving the additive v17 table and trigger in place is safe for reward creation, but pending rows will accumulate. Dropping the trigger/table is destructive and should only be considered after a backup and explicit operational review.
 
 ## Verification and troubleshooting
 
@@ -160,6 +165,12 @@ Common preflight failures:
 - **Database unavailable:** start PostgreSQL and check the ignored local connection configuration without pasting it into logs or issue reports.
 - **Schema mismatch:** inspect `VersionHistory`, restore from backup if necessary, and apply only the appropriate next migration. Do not let the launcher migrate automatically.
 
+## Reward notification delivery semantics
+
+Each bot process/shard may poll the PostgreSQL outbox. Short transactions use account-row locks, `FOR UPDATE SKIP LOCKED`, five-minute leases, and UUID claim tokens so workers cannot concurrently deliver the same active claim or acknowledge a newer claim. One DM aggregates at most 10 rewards for one user. Temporary Discord failures retry after 1 minute, 5 minutes, 30 minutes, 2 hours, and 12 hours; attempt six becomes `retry_exhausted`. Disabled DMs and missing Discord users fail terminally without retrying.
+
+Delivery attempts are durable and **at least once**, not exactly once. If Discord accepts a DM but the process exits before `delivered_at` is committed, the lease eventually expires and the notification may be sent again. The bot intentionally does not search private message history to conceal this unavoidable acknowledgement gap.
+
 ## Current Go Study behavior
 
-The bot includes Discord login, IPC registry integration, camera-gated verified study tracking, verified hourly rewards, a reward catalog, and per-user inventory on PostgreSQL schema version 16. Hardening does not change study verification or reward behavior; it only makes local installation, optional-module defaults, startup validation, process supervision, and shutdown reproducible.
+The bot includes Discord login, IPC registry integration, camera-gated verified study tracking, verified hourly rewards, a reward catalog, per-user inventory, and a durable reward-notification outbox on PostgreSQL schema version 17. Notification delivery does not change study verification, reward selection, or inventory behavior.
