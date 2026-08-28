@@ -96,7 +96,7 @@ class VoiceTrackerCog(LionCog):
             for channel in itertools.chain(guild.voice_channels, guild.stage_channels):
                 if not self.is_untracked(channel):
                     for member in channel.members:
-                        if member.voice and not member.bot:
+                        if member.voice and member.voice.self_video and not member.bot:
                             data['actual'] += 1
 
         if not self.initialised.is_set():
@@ -180,6 +180,19 @@ class VoiceTrackerCog(LionCog):
 
         # Compute time to end complete sessions
         now = utc_now()
+        # Camera-off ongoing rows may exist from before camera-gated tracking.
+        # Finalise them at their last verified state change before calculating
+        # caps or reconciling the current camera-on states.
+        paused_ongoing = [row for row in ongoing if not row.live_video]
+        if paused_ongoing:
+            logger.info(
+                f"Closing {len(paused_ongoing)} legacy camera-off voice sessions before reconciliation."
+            )
+            await self.data.VoiceSessionsOngoing.close_voice_sessions_at(*(
+                (row.guildid, row.userid, row.last_update) for row in paused_ongoing
+            ))
+            ongoing = [row for row in ongoing if row.live_video]
+
         last_update = max((row.last_update for row in ongoing), default=now)
         end_at = min(last_update + dt.timedelta(seconds=3600), now)
 
@@ -338,7 +351,7 @@ class VoiceTrackerCog(LionCog):
             for channel in itertools.chain(guild.voice_channels, guild.stage_channels):
                 if not self.is_untracked(channel):
                     for member in channel.members:
-                        if member.voice and not member.bot:
+                        if member.voice and member.voice.self_video and not member.bot:
                             state = TrackedVoiceState.from_voice_state(member.voice)
                             states[(guild.id, member.id)] = state
             logger.debug(f"Loaded {len(states)} tracked voice states for <gid: {guild.id}>.")
@@ -396,7 +409,7 @@ class VoiceTrackerCog(LionCog):
                 for channel in itertools.chain(guild.voice_channels, guild.stage_channels):
                     if not self.is_untracked(channel):
                         for member in channel.members:
-                            if member.voice and not member.bot:
+                            if member.voice and member.voice.self_video and not member.bot:
                                 state = TrackedVoiceState.from_voice_state(member.voice)
                                 states[(guild.id, member.id)] = state
 
@@ -444,14 +457,13 @@ class VoiceTrackerCog(LionCog):
 
         bchannel = before.channel if before else None
         achannel = after.channel if after else None
+        event_at = utc_now()
 
         # Take tracking lock
         async with self.tracking_lock:
             # Fetch tracked member session state
             session = self.get_session(member.guild.id, member.id)
             tstate = session.state
-            # This usually pulls from cache, but don't rely on it
-            untracked = (await self.settings.UntrackedChannels.get(member.guild.id)).data
 
             if (bstate.channelid != astate.channelid):
                 # Leaving/Moving/Joining channels
@@ -475,7 +487,7 @@ class VoiceTrackerCog(LionCog):
                             " because they left the channel."
                         )
                         await session.close()
-                    elif not self.is_untracked(bchannel):
+                    elif bstate.video and not self.is_untracked(bchannel):
                         # Leaving tracked channel without an active session?
                         logger.warning(
                             "Voice event does not match session information! "
@@ -497,18 +509,9 @@ class VoiceTrackerCog(LionCog):
                             f"during voice session in channel <cid:{tstate.channelid}>!"
                         )
                         await session.close()
-                    if not self.is_untracked(achannel):
-                        # If the channel they are joining is tracked, schedule a session start for them
-                        delay, start, expiry = await self._session_boundaries_for(member.guild.id, member.id)
-                        hourly_rate = await self._calculate_rate(member.guild.id, member.id, astate)
-
-                        logger.debug(
-                            f"Scheduling voice session for member `{member.name}' <uid:{member.id}> "
-                            f"in guild '{member.guild.name}' <gid: member.guild.id> "
-                            f"in channel '{achannel}' <cid: {achannel.id}>. "
-                            f"Session will start at {start}, expire at {expiry}, and confirm in {delay}."
-                        )
-                        await session.schedule_start(delay, start, expiry, astate, hourly_rate)
+                    if not self.is_untracked(achannel) and astate.video:
+                        # Only camera-on members are eligible for verified study time.
+                        start, expiry = await self._schedule_verified_session(member, achannel, astate)
 
                         t = self.bot.translator.t
                         lguild = await self.bot.core.lions.fetch_guild(member.guild.id)
@@ -526,12 +529,47 @@ class VoiceTrackerCog(LionCog):
                             start=discord.utils.format_dt(start, 'F'),
                             expiry=discord.utils.format_dt(expiry, 'R'),
                         )
-            elif session.activity:
-                # If the channelid did not change, the live state must have
-                # Recalculate the economy rate, and update the session
-                # Touch the ongoing session with the new state
-                hourly_rate = await self._calculate_rate(member.guild.id, member.id, astate)
-                await session.update(new_state=astate, new_rate=hourly_rate)
+            elif astate.channelid:
+                # Same-channel state update: camera gates verified study time.
+                if bstate.video and not astate.video:
+                    if session.activity:
+                        logger.debug(
+                            f"Pausing verified voice session for member '{member.name}' <uid:{member.id}> "
+                            f"in guild '{member.guild.name}' <gid:{member.guild.id}> because camera was disabled."
+                        )
+                        await session.pause(event_at)
+                elif not bstate.video and astate.video:
+                    if session.activity:
+                        # Defensive recovery for a legacy camera-off ongoing row.
+                        await session.pause(event_at)
+                    if not self.is_untracked(achannel):
+                        await self._schedule_verified_session(member, achannel, astate)
+                elif astate.video:
+                    if session.activity:
+                        # Preserve stream and reward-rate updates while verified.
+                        hourly_rate = await self._calculate_rate(member.guild.id, member.id, astate)
+                        await session.update(new_state=astate, new_rate=hourly_rate)
+                    elif not self.is_untracked(achannel):
+                        # Recover if an eligible camera-on state was previously missed.
+                        await self._schedule_verified_session(member, achannel, astate)
+                elif session.activity:
+                    # Enforce the invariant on any camera-off state update.
+                    await session.pause(event_at)
+
+    async def _schedule_verified_session(self, member, channel, state):
+        """Schedule a normal voice session for a camera-verified member."""
+        session = self.get_session(member.guild.id, member.id)
+        delay, start, expiry = await self._session_boundaries_for(member.guild.id, member.id)
+        hourly_rate = await self._calculate_rate(member.guild.id, member.id, state)
+
+        logger.debug(
+            f"Scheduling verified voice session for member '{member.name}' <uid:{member.id}> "
+            f"in guild '{member.guild.name}' <gid:{member.guild.id}> "
+            f"in channel '{channel}' <cid:{channel.id}>. "
+            f"Session will start at {start}, expire at {expiry}, and confirm in {delay}."
+        )
+        await session.schedule_start(delay, start, expiry, state, hourly_rate)
+        return start, expiry
 
     @LionCog.listener("on_guildset_untracked_channels")
     @LionCog.listener("on_guildset_hourly_reward")

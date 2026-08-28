@@ -360,27 +360,46 @@ class VoiceSession:
                         ),
                     )
 
-            if self.start_task is not None:
-                self.start_task.cancel()
-                self.start_task = None
+            self._reset()
 
-            if self.expiry_task is not None:
-                self.expiry_task.cancel()
-                self.expiry_task = None
+    async def pause(self, at: Optional[dt.datetime] = None):
+        """
+        Pause verified tracking without treating the member as having left voice.
 
-            self.data = None
-            self.state = None
-            self.hourly_rate = None
-            self._tag = None
-            self._start_time = None
+        An ongoing verified segment is finalised normally. A pending segment is
+        cancelled without creating a database record.
+        """
+        async with self.lock:
+            await self._close(at)
+            self._reset()
 
-            # Always release strong reference to session (to allow garbage collection)
-            self._active_sessions_[self.guildid].pop(self.userid)
+    def _reset(self):
+        """Reset local session state after closing, pausing, or cancellation."""
+        if self.start_task is not None:
+            self.start_task.cancel()
+            self.start_task = None
 
-    async def _close(self):
+        if self.expiry_task is not None:
+            self.expiry_task.cancel()
+            self.expiry_task = None
+
+        self.data = None
+        self.state = None
+        self.hourly_rate = None
+        self._tag = None
+        self._start_time = None
+
+        # Always release strong reference to session (to allow garbage collection)
+        self._active_sessions_[self.guildid].pop(self.userid, None)
+
+    async def _close(self, at: Optional[dt.datetime] = None):
         if self.activity is SessionState.ONGOING:
             # End the ongoing session
-            now = utc_now()
+            now = at or utc_now()
+            if now < self.data.start_time:
+                # A camera-off event can race the confirmation task at the
+                # pending/ongoing boundary; never persist negative time.
+                now = self.data.start_time
             await self.data.close_study_session_at(self.guildid, self.userid, now)
 
             # TODO: Something a bit saner/safer.. dispatch the finished session instead?
@@ -391,5 +410,5 @@ class VoiceSession:
             rank_cog = self.bot.get_cog('RankCog')
             if rank_cog is not None:
                 asyncio.create_task(rank_cog.on_voice_session_complete(
-                    (self.guildid, self.userid, int((utc_now() - self.data.start_time).total_seconds()), 0)
+                    (self.guildid, self.userid, int((now - self.data.start_time).total_seconds()), 0)
                 ))
