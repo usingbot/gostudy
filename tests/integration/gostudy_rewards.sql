@@ -1,4 +1,4 @@
--- Run with psql against a disposable database after applying schema v15.
+-- Run with psql against a disposable database after applying schema v16.
 -- Every write is rolled back.
 BEGIN;
 
@@ -108,6 +108,24 @@ BEGIN
   IF (SELECT verified_seconds FROM gostudy_reward_accounts WHERE userid = -15004) <> 3599
      OR (SELECT COUNT(*) FROM gostudy_hour_rewards WHERE userid = -15004) <> 0 THEN
     RAISE EXCEPTION 'verified-duration cap assertion failed';
+  END IF;
+END;
+$$;
+
+-- Every hour reward created through verified-session processing receives one
+-- inventory item through the post-v16 reward trigger.
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM gostudy_hour_rewards AS rewards
+    LEFT JOIN gostudy_user_inventory AS inventory
+      ON inventory.hour_rewardid = rewards.rewardid
+    WHERE
+      rewards.userid IN (-15001, -15002, -15003, -15004)
+      AND inventory.hour_rewardid IS NULL
+  ) THEN
+    RAISE EXCEPTION 'verified-session to inventory assertion failed';
   END IF;
 END;
 $$;
