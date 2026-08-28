@@ -15,6 +15,7 @@ from utils.lib import utc_now
 from utils.ui import FastModal
 from wards import sys_admin_ward
 from constants import MAX_COINS
+from optional_features import optional_webhook
 
 from . import logger, babel
 from .data import PremiumData, GemTransactionType
@@ -40,8 +41,12 @@ class PremiumCog(LionCog):
         if (leo_setting_cog := self.bot.get_cog('LeoSettings')) is not None:
             self.crossload_group(self.leo_group, leo_setting_cog.leo_group)
 
-        if (gem_log_url := self.bot.config.endpoints.get('gem_log', None)) is not None:
-            self.gem_logger = discord.Webhook.from_url(gem_log_url, session=self.bot.web_client)
+        self.gem_logger = optional_webhook(
+            self.bot.config.endpoints.get('gem_log', None),
+            discord.Webhook.from_url,
+            session=self.bot.web_client,
+            logger=logger,
+        )
 
 
     # ----- API -----

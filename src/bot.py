@@ -16,6 +16,7 @@ from data import Database
 from babel.translator import LeoBabel, ctx_translator
 
 from constants import DATA_VERSION
+from optional_features import initial_extensions
 
 
 for name in conf.config.options('LOGGING_LEVELS', no_defaults=True):
@@ -76,12 +77,7 @@ async def main():
                 shardname=shardname,
                 db=db,
                 config=conf,
-                initial_extensions=[
-                    'utils', 'core', 'analytics',
-                    'modules',
-                    'babel',
-                    'tracking.voice', 'tracking.text',
-                ],
+                initial_extensions=initial_extensions(conf.config),
                 web_client=session,
                 app_ipc=shard_talk,
                 testing_guilds=conf.bot.getintlist('admin_guilds'),

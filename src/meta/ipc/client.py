@@ -1,5 +1,6 @@
 from typing import Optional, TypeAlias, Any
 import asyncio
+from contextlib import suppress
 import logging
 import pickle
 
@@ -25,7 +26,10 @@ class AppClient:
 
         self._listener: Optional[asyncio.Server] = None  # Local client server
         self._server = None  # Connection to the registry server
-        self._keepalive = None
+        self._keepalive: Optional[asyncio.Task] = None
+        self._reconnect_task: Optional[asyncio.Task] = None
+        self._closing = False
+        self._closed = asyncio.Event()
 
         self.register_route('new_peer')(self.new_peer)
         self.register_route('drop_peer')(self.drop_peer)
@@ -44,46 +48,84 @@ class AppClient:
 
     async def server_connection(self):
         """Establish a connection to the registry server"""
-        try:
-            reader, writer = await asyncio.open_connection(**self.server_address)
+        while not self._closing:
+            writer = None
+            try:
+                reader, writer = await asyncio.open_connection(**self.server_address)
 
-            payload = ('connect', (), {'appid': self.appid, 'address': self.address})
-            writer.write(pickle.dumps(payload))
-            writer.write(b'\n')
-            await writer.drain()
+                payload = ('connect', (), {'appid': self.appid, 'address': self.address})
+                writer.write(pickle.dumps(payload))
+                writer.write(b'\n')
+                await writer.drain()
 
-            data = await reader.readline()
-            peers = pickle.loads(data)
+                data = await reader.readline()
+                peers = pickle.loads(data)
+            except asyncio.CancelledError:
+                if writer is not None:
+                    writer.close()
+                    with suppress(Exception):
+                        await writer.wait_closed()
+                raise
+            except Exception:
+                if writer is not None:
+                    writer.close()
+                    with suppress(Exception):
+                        await writer.wait_closed()
+                if self._closing:
+                    return
+                logger.exception(
+                    "Could not connect to registry server. Trying again in 30 seconds.",
+                    extra={'action': 'Connect'}
+                )
+                await asyncio.sleep(30)
+                continue
+
+            if self._closing:
+                writer.close()
+                with suppress(Exception):
+                    await writer.wait_closed()
+                return
+
             self.peers = peers
             self._server = (reader, writer)
-        except Exception:
-            logger.exception(
-                "Could not connect to registry server. Trying again in 30 seconds.",
-                extra={'action': 'Connect'}
-            )
-            await asyncio.sleep(30)
-            asyncio.create_task(self.server_connection())
-        else:
             logger.debug(
                 "Connected to the registry server, launching keepalive.",
                 extra={'action': 'Connect'}
             )
             self._keepalive = asyncio.create_task(self._server_keepalive())
+            return
+
+    def _schedule_reconnect(self):
+        if self._closing:
+            return
+        if self._reconnect_task is None or self._reconnect_task.done():
+            self._reconnect_task = asyncio.create_task(self.server_connection())
 
     async def _server_keepalive(self):
         with logging_context(action='Keepalive'):
             if self._server is None:
                 raise ValueError("Cannot keepalive non-existent server!")
-            reader, write = self._server
+            reader, writer = self._server
             try:
                 await reader.read()
+            except asyncio.CancelledError:
+                raise
             except Exception:
-                logger.exception("Lost connection to address server. Reconnecting...")
+                if not self._closing:
+                    logger.exception("Lost connection to address server. Reconnecting...")
             else:
-                # Connection ended or broke
-                logger.info("Lost connection to address server. Reconnecting...")
-        await asyncio.sleep(30)
-        asyncio.create_task(self.server_connection())
+                if not self._closing:
+                    logger.info("Lost connection to address server. Reconnecting...")
+            finally:
+                if self._server is not None and self._server[1] is writer:
+                    self._server = None
+                writer.close()
+                with suppress(Exception):
+                    await writer.wait_closed()
+
+        if not self._closing:
+            await asyncio.sleep(30)
+            self._schedule_reconnect()
 
     async def new_peer(self, appid, address):
         self.peers[appid] = address
@@ -95,9 +137,42 @@ class AppClient:
         self.peers.pop(appid, None)
 
     async def close(self):
-        # Close connection to the server
-        # TODO
-        ...
+        """Stop reconnecting and close the registry connection and local listener."""
+        if self._closing:
+            await self._closed.wait()
+            return
+
+        self._closing = True
+        try:
+            current = asyncio.current_task()
+            tasks = [
+                task for task in (self._keepalive, self._reconnect_task)
+                if task is not None and task is not current and not task.done()
+            ]
+            for task in tasks:
+                task.cancel()
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+            self._keepalive = None
+            self._reconnect_task = None
+
+            server = self._server
+            self._server = None
+            if server is not None:
+                _, writer = server
+                writer.close()
+                with suppress(Exception):
+                    await writer.wait_closed()
+
+            listener = self._listener
+            self._listener = None
+            if listener is not None:
+                listener.close()
+                await listener.wait_closed()
+
+            self.peers = {self.appid: self.address}
+        finally:
+            self._closed.set()
 
     @log_wrap(action="Req")
     async def request(self, appid, payload: 'AppPayload', wait_for_reply=True):
@@ -158,11 +233,20 @@ class AppClient:
         Start the local peer server.
         Connect to the address server.
         """
+        if self._closing:
+            raise RuntimeError("Cannot reconnect a closed AppClient.")
+
         # Start the client server
         self._listener = await asyncio.start_server(self.handle_request, **self.address, start_serving=True)
 
         logger.info(f"Serving on {self.address}")
-        await self.server_connection()
+        reconnect_task = asyncio.create_task(self.server_connection())
+        self._reconnect_task = reconnect_task
+        try:
+            await reconnect_task
+        finally:
+            if self._reconnect_task is reconnect_task:
+                self._reconnect_task = None
 
 
 class AppPayload:

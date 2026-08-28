@@ -111,25 +111,25 @@ class GeneralSettingsCog(LionCog):
                     'cmd:configure_general|success',
                     "Settings Updated!"
                 )),
-            description='\n'.join(
-                f"{self.bot.config.emojis.tick} {line}" for line in results
+                description='\n'.join(
+                    f"{self.bot.config.emojis.tick} {line}" for line in results
+                )
             )
-        )
-        await ctx.reply(embed=success_embed)
-        # TODO: Trigger configuration panel update if listening UI.
-    else:
-        # Show general configuration panel UI
-        # TODO Interactive UI
-        embed = discord.Embed(
-            colour=discord.Colour.orange(),
-            title=t(_p(
-                'cmd:configure_general|panel|title',
-                "General Configuration Panel"
-            ))
-        )
-        embed.add_field(
-            **ctx.lguild.config.timezone.embed_field
-        )
-        await ctx.reply(embed=embed)
+            await ctx.reply(embed=success_embed)
+            # TODO: Trigger configuration panel update if listening UI.
+        else:
+            # Show general configuration panel UI
+            # TODO Interactive UI
+            embed = discord.Embed(
+                colour=discord.Colour.orange(),
+                title=t(_p(
+                    'cmd:configure_general|panel|title',
+                    "General Configuration Panel"
+                ))
+            )
+            embed.add_field(
+                **ctx.lguild.config.timezone.embed_field
+            )
+            await ctx.reply(embed=embed)
 
     cmd_configure_general.autocomplete('timezone')(TimezoneSetting.parse_acmpl)

@@ -133,6 +133,13 @@ class LionBot(Bot):
                 self.tree.copy_global_to(guild=guild)
                 await self.tree.sync(guild=guild)
 
+    async def close(self) -> None:
+        """Close Discord first, then stop the local IPC client without reconnecting."""
+        try:
+            await super().close()
+        finally:
+            await self.app_ipc.close()
+
     # To make the type checker happy about fetching cogs by name
     # TODO: Move this to stubs at some point
 

@@ -157,9 +157,7 @@ class CustomSkinCog(LionCog):
         """
         cog = self.bot.get_cog('PremiumCog')
         if not cog:
-            logger.error(
-                "Trying to get guild skinid without loaded premium cog!"
-            )
+            logger.debug("Premium is disabled; using the default guild skin.")
             return None
         row = await cog.data.PremiumGuild.fetch(guildid)
         return row.custom_skin_id if row else None
@@ -260,6 +258,8 @@ class CustomSkinCog(LionCog):
     async def cmd_my_skin(self, ctx: LionContext):
         if not ctx.interaction:
             return
+        if self.bot.get_cog('PremiumCog') is None:
+            raise UserInputError("User skin customization is not enabled on this bot.")
         ui = UserSkinUI(self.bot, ctx.author.id, ctx.author.id)
         await ui.run(ctx.interaction, ephemeral=True)
         await ui.wait()
@@ -287,6 +287,8 @@ class CustomSkinCog(LionCog):
 
         # Check guild premium status
         premiumcog = self.bot.get_cog('PremiumCog')
+        if premiumcog is None:
+            raise UserInputError("Premium server branding is not enabled on this bot.")
         guild_row = await premiumcog.data.PremiumGuild.fetch(ctx.guild.id, cached=False)
 
         if not guild_row:
