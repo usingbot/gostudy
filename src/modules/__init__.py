@@ -18,6 +18,7 @@ active = [
     '.member_admin',
     '.moderation',
     '.video_channels',
+    '.gostudy_rewards',
     '.meta',
     '.sponsors',
     '.topgg',
