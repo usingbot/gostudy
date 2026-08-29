@@ -1,4 +1,4 @@
--- Run only with psql against an explicitly authorized disposable schema v18
+-- Run only with psql against an explicitly authorized disposable schema v19
 -- database. Every write in this sequential suite is rolled back.
 BEGIN;
 

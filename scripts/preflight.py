@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-EXPECTED_SCHEMA_VERSION = 18
+EXPECTED_SCHEMA_VERSION = 19
 EXPECTED_PYTHON = (3, 11, 16)
 PLACEHOLDERS = ("CHANGE_ME", "REPLACE_WITH_")
 EXPECTED_DEPENDENCIES = {

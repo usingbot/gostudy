@@ -1,4 +1,4 @@
-"""Disposable PostgreSQL integration tests for Go Study Chalk schema v18.
+"""Disposable PostgreSQL integration tests for Go Study Chalk schema v19.
 
 The tests commit immutable ledger rows and are deliberately double-gated:
 
@@ -49,7 +49,7 @@ MIGRATION_WRITES_ALLOWED = (
 
 @unittest.skipUnless(
     TEST_DATABASE_URL and WRITES_ALLOWED,
-    'requires an explicitly authorized disposable PostgreSQL schema v18 database',
+    'requires an explicitly authorized disposable PostgreSQL schema v19 database',
 )
 class ChalkConcurrencyIntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
@@ -63,9 +63,9 @@ class ChalkConcurrencyIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     'SELECT version FROM VersionHistory ORDER BY time DESC LIMIT 1'
                 )
                 row = await cursor.fetchone()
-        if row is None or row[0] != 18:
+        if row is None or row[0] != 19:
             await self.pool_context.__aexit__(None, None, None)
-            raise unittest.SkipTest('disposable database is not schema version 18')
+            raise unittest.SkipTest('disposable database is not schema version 19')
 
         self.data = GoStudyChalkData()
         self.data.bind(self.connector)
@@ -317,10 +317,23 @@ class ChalkMigrationIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.schema_v18 = (ROOT / 'data/schema.sql').read_text(encoding='utf-8')
-        cls.migration = (
+        cls.schema_v19 = (ROOT / 'data/schema.sql').read_text(encoding='utf-8')
+        cls.migration_v17_v18 = (
             ROOT / 'data/migration/v17-v18/migration.sql'
         ).read_text(encoding='utf-8')
+        cls.migration_v18_v19 = (
+            ROOT / 'data/migration/v18-v19/migration.sql'
+        ).read_text(encoding='utf-8')
+
+        admin_start = cls.schema_v19.index('-- Go Study Chalk admin API {{{')
+        admin_end = cls.schema_v19.index('-- }}}', admin_start) + len('-- }}}')
+        cls.schema_v18 = (
+            cls.schema_v19[:admin_start] + cls.schema_v19[admin_end:]
+        ).replace(
+            "INSERT INTO VersionHistory (version, author) VALUES (19, 'Initial Creation');",
+            "INSERT INTO VersionHistory (version, author) VALUES (18, 'Initial Creation');",
+            1,
+        )
 
         chalk_start = cls.schema_v18.index('-- Go Study Chalk currency {{{')
         chalk_end = cls.schema_v18.index('-- }}}', chalk_start) + len('-- }}}')
@@ -381,7 +394,7 @@ class ChalkMigrationIntegrationTests(unittest.IsolatedAsyncioTestCase):
         try:
             async with conn.cursor() as cursor:
                 await cursor.execute(self.schema_v17)
-                await cursor.execute(self.migration)
+                await cursor.execute(self.migration_v17_v18)
                 await cursor.execute(
                     'SELECT version FROM VersionHistory ORDER BY time DESC LIMIT 1'
                 )
@@ -394,7 +407,7 @@ class ChalkMigrationIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 history_count = (await cursor.fetchone())[0]
 
                 with self.assertRaises(psycopg.Error):
-                    await cursor.execute(self.migration)
+                    await cursor.execute(self.migration_v17_v18)
                 await conn.rollback()
 
                 await cursor.execute(
@@ -420,7 +433,7 @@ class ChalkMigrationIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 history_before = await cursor.fetchall()
 
                 with self.assertRaises(psycopg.Error):
-                    await cursor.execute(self.migration)
+                    await cursor.execute(self.migration_v17_v18)
                 await conn.rollback()
 
                 await cursor.execute(
@@ -434,18 +447,184 @@ class ChalkMigrationIntegrationTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await conn.close()
 
-    async def test_fresh_v18_schema_runs_chalk_and_reward_regressions(self):
+    async def test_version_18_migrates_to_19_without_economic_changes(self):
         conn = await self.connect_database()
         try:
             async with conn.cursor() as cursor:
                 await cursor.execute(self.schema_v18)
                 await cursor.execute(
+                    """
+                    SELECT
+                      (SELECT count(*) FROM public.gostudy_chalk_accounts),
+                      (SELECT count(*) FROM public.gostudy_chalk_transactions)
+                    """
+                )
+                economic_counts = await cursor.fetchone()
+                await cursor.execute(
+                    """
+                    SELECT relname, relacl::TEXT
+                    FROM pg_catalog.pg_class
+                    WHERE oid IN (
+                      'public.gostudy_chalk_accounts'::REGCLASS,
+                      'public.gostudy_chalk_transactions'::REGCLASS
+                    )
+                    ORDER BY relname
+                    """
+                )
+                table_privileges = await cursor.fetchall()
+                await cursor.execute(
+                    """
+                    SELECT proacl::TEXT
+                    FROM pg_catalog.pg_proc
+                    WHERE oid = (
+                      'public.gostudy_apply_chalk_transaction('
+                      'bigint,bigint,text,text,bigint,text,text,bigint,text)'
+                    )::REGPROCEDURE
+                    """
+                )
+                generic_privileges = await cursor.fetchone()
+
+                await cursor.execute(self.migration_v18_v19)
+                await cursor.execute(
                     'SELECT version FROM VersionHistory ORDER BY time DESC LIMIT 1'
                 )
-                self.assertEqual((await cursor.fetchone())[0], 18)
+                self.assertEqual((await cursor.fetchone())[0], 19)
+                await cursor.execute(
+                    "SELECT to_regprocedure("
+                    "'public.gostudy_admin_grant_chalk(bigint,bigint,bigint,text,text)')"
+                )
+                self.assertIsNotNone((await cursor.fetchone())[0])
+                await cursor.execute(
+                    """
+                    SELECT
+                      (SELECT count(*) FROM public.gostudy_chalk_accounts),
+                      (SELECT count(*) FROM public.gostudy_chalk_transactions)
+                    """
+                )
+                self.assertEqual(await cursor.fetchone(), economic_counts)
+                await cursor.execute(
+                    """
+                    SELECT relname, relacl::TEXT
+                    FROM pg_catalog.pg_class
+                    WHERE oid IN (
+                      'public.gostudy_chalk_accounts'::REGCLASS,
+                      'public.gostudy_chalk_transactions'::REGCLASS
+                    )
+                    ORDER BY relname
+                    """
+                )
+                self.assertEqual(await cursor.fetchall(), table_privileges)
+                await cursor.execute(
+                    """
+                    SELECT proacl::TEXT
+                    FROM pg_catalog.pg_proc
+                    WHERE oid = (
+                      'public.gostudy_apply_chalk_transaction('
+                      'bigint,bigint,text,text,bigint,text,text,bigint,text)'
+                    )::REGPROCEDURE
+                    """
+                )
+                self.assertEqual(await cursor.fetchone(), generic_privileges)
+                await cursor.execute(
+                    """
+                    SELECT count(*)
+                    FROM pg_catalog.pg_proc AS functions
+                    JOIN pg_catalog.pg_namespace AS namespaces
+                      ON namespaces.oid = functions.pronamespace
+                    CROSS JOIN LATERAL pg_catalog.aclexplode(
+                      COALESCE(
+                        functions.proacl,
+                        pg_catalog.acldefault('f', functions.proowner)
+                      )
+                    ) AS privileges
+                    WHERE namespaces.nspname = 'public'
+                      AND functions.proname IN (
+                        'gostudy_admin_grant_chalk',
+                        'gostudy_admin_deduct_chalk',
+                        'gostudy_admin_get_chalk_account',
+                        'gostudy_admin_list_chalk_transactions'
+                      )
+                      AND privileges.grantee = 0
+                      AND privileges.privilege_type = 'EXECUTE'
+                    """
+                )
+                self.assertEqual((await cursor.fetchone())[0], 0)
+                await cursor.execute('SELECT count(*) FROM VersionHistory')
+                history_count = (await cursor.fetchone())[0]
+
+                with self.assertRaises(psycopg.Error):
+                    await cursor.execute(self.migration_v18_v19)
+                await conn.rollback()
+
+                await cursor.execute(
+                    'SELECT version FROM VersionHistory ORDER BY time DESC LIMIT 1'
+                )
+                self.assertEqual((await cursor.fetchone())[0], 19)
+                await cursor.execute('SELECT count(*) FROM VersionHistory')
+                self.assertEqual((await cursor.fetchone())[0], history_count)
+        finally:
+            await conn.close()
+
+    async def test_version_17_rejects_v19_without_objects_or_history_change(self):
+        conn = await self.connect_database()
+        try:
+            async with conn.cursor() as cursor:
+                await cursor.execute(self.schema_v17)
+                await cursor.execute(
+                    'SELECT version, time, author FROM VersionHistory ORDER BY time'
+                )
+                history_before = await cursor.fetchall()
+
+                with self.assertRaises(psycopg.Error):
+                    await cursor.execute(self.migration_v18_v19)
+                await conn.rollback()
+
+                await cursor.execute(
+                    'SELECT version, time, author FROM VersionHistory ORDER BY time'
+                )
+                self.assertEqual(await cursor.fetchall(), history_before)
+                await cursor.execute(
+                    "SELECT to_regprocedure("
+                    "'public.gostudy_admin_grant_chalk(bigint,bigint,bigint,text,text)')"
+                )
+                self.assertIsNone((await cursor.fetchone())[0])
+        finally:
+            await conn.close()
+
+    async def test_null_version_rejects_v19_without_objects(self):
+        conn = await self.connect_database()
+        try:
+            async with conn.cursor() as cursor:
+                await cursor.execute(self.schema_v18)
+                await cursor.execute('DELETE FROM VersionHistory')
+
+                with self.assertRaises(psycopg.Error):
+                    await cursor.execute(self.migration_v18_v19)
+                await conn.rollback()
+
+                await cursor.execute('SELECT count(*) FROM VersionHistory')
+                self.assertEqual((await cursor.fetchone())[0], 0)
+                await cursor.execute(
+                    "SELECT to_regprocedure("
+                    "'public.gostudy_admin_get_chalk_account(bigint)')"
+                )
+                self.assertIsNone((await cursor.fetchone())[0])
+        finally:
+            await conn.close()
+
+    async def test_fresh_v19_schema_runs_chalk_and_reward_regressions(self):
+        conn = await self.connect_database()
+        try:
+            async with conn.cursor() as cursor:
+                await cursor.execute(self.schema_v19)
+                await cursor.execute(
+                    'SELECT version FROM VersionHistory ORDER BY time DESC LIMIT 1'
+                )
+                self.assertEqual((await cursor.fetchone())[0], 19)
 
                 for relative_path in (
                     'tests/integration/gostudy_chalk.sql',
+                    'tests/integration/gostudy_chalk_admin.sql',
                     'tests/integration/gostudy_rewards.sql',
                     'tests/integration/gostudy_inventory.sql',
                     'tests/integration/gostudy_reward_notifications.sql',
