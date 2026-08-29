@@ -1,7 +1,7 @@
-"""PostgreSQL concurrency tests for the v17 notification outbox.
+"""PostgreSQL concurrency tests for the notification outbox on schema v18.
 
 These tests are deliberately double-gated because they commit short-lived
-fixtures and require schema v17. Point them only at a disposable database:
+fixtures and require schema v18. Point them only at a disposable database:
 
 GOSTUDY_NOTIFICATION_TEST_DATABASE_URL=... \
 GOSTUDY_NOTIFICATION_TEST_ALLOW_WRITES=1 \
@@ -32,7 +32,7 @@ WRITES_ALLOWED = os.environ.get('GOSTUDY_NOTIFICATION_TEST_ALLOW_WRITES') == '1'
 
 @unittest.skipUnless(
     TEST_DATABASE_URL and WRITES_ALLOWED,
-    'requires an explicitly authorized disposable PostgreSQL schema v17 database',
+    'requires an explicitly authorized disposable PostgreSQL schema v18 database',
 )
 class RewardNotificationClaimIntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
@@ -46,9 +46,9 @@ class RewardNotificationClaimIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     'SELECT version FROM VersionHistory ORDER BY time DESC LIMIT 1'
                 )
                 row = await cursor.fetchone()
-        if row is None or row['version'] != 17:
+        if row is None or row['version'] != 18:
             await self.pool_context.__aexit__(None, None, None)
-            raise unittest.SkipTest('disposable database is not schema version 17')
+            raise unittest.SkipTest('disposable database is not schema version 18')
 
         self.userid = -random.randint(1_700_000_000, 1_799_999_999)
         self.source_ids = [

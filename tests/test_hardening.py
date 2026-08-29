@@ -121,16 +121,16 @@ class PreflightTests(unittest.TestCase):
     def test_latest_schema_version(self):
         cursor = mock.MagicMock()
         cursor.__enter__.return_value = cursor
-        cursor.fetchone.return_value = (17,)
+        cursor.fetchone.return_value = (18,)
         connection = mock.Mock()
         connection.cursor.return_value = cursor
-        self.assertEqual(preflight.latest_schema_version(connection), 17)
-        self.assertTrue(preflight.schema_version_is_current(17))
-        self.assertFalse(preflight.schema_version_is_current(16))
+        self.assertEqual(preflight.latest_schema_version(connection), 18)
+        self.assertTrue(preflight.schema_version_is_current(18))
+        self.assertFalse(preflight.schema_version_is_current(17))
 
-    def test_schema_declares_version_17(self):
+    def test_schema_declares_version_18(self):
         schema = (ROOT / "data/schema.sql").read_text(encoding="utf-8")
-        self.assertIn("INSERT INTO VersionHistory (version, author) VALUES (17,", schema)
+        self.assertIn("INSERT INTO VersionHistory (version, author) VALUES (18,", schema)
 
 
 class SupervisorTests(unittest.TestCase):

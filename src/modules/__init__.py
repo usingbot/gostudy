@@ -22,6 +22,7 @@ active = [
     '.moderation',
     '.video_channels',
     '.gostudy_rewards',
+    '.gostudy_chalk',
     '.meta',
     '.sponsors',
 ]
