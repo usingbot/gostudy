@@ -51,7 +51,7 @@ sudo -u postgres createuser --pwprompt gostudy
 sudo -u postgres createdb --owner=gostudy gostudy
 ```
 
-For a new, empty database, load `data/schema.sql` exactly once. It already represents schema version 17, so do not replay any historical migration after it.
+For a new, empty database, load `data/schema.sql` exactly once. It already represents schema version 21, so do not replay any historical migration after it.
 
 ```bash
 psql "dbname=gostudy user=gostudy host=127.0.0.1" \
@@ -64,7 +64,7 @@ psql "dbname=gostudy user=gostudy host=127.0.0.1" \
   --command 'SELECT version FROM VersionHistory ORDER BY time DESC LIMIT 1;'
 ```
 
-The verification command must print `17`.
+The verification command must print `21`.
 
 ### Configure local runtime files
 
@@ -135,17 +135,30 @@ psql "dbname=gostudy user=gostudy host=127.0.0.1" \
   --command 'SELECT version, time, author FROM VersionHistory ORDER BY time DESC LIMIT 1;'
 ```
 
-If and only if that query reports version 16 and the reviewed target is version 17:
+If and only if that query reports version 20 and the reviewed target is version 21:
 
 ```bash
 psql "dbname=gostudy user=gostudy host=127.0.0.1" \
   --set ON_ERROR_STOP=on \
-  --file data/migration/v16-v17/migration.sql
+  --file data/migration/v20-v21/migration.sql
 ```
 
-The v16-v17 migration creates an initially empty transactional notification outbox and installs a second `AFTER INSERT` trigger on `gostudy_hour_rewards`. It does not backfill existing rewards. The inventory and notification triggers both run within the hour-reward transaction, so a committed new entitlement has both its granted inventory item and its outbox row.
+The v20-v21 migration creates three initially empty guild-registry tables. It does not copy historical guild data, download Discord media, or touch existing StudyLion/Go Study product tables. The bot's next ready/startup event performs the initial authoritative reconciliation for every currently connected guild.
 
-Migrations are not idempotent. The launcher and preflight intentionally never modify the database. Deploy schema v17 before running v17 application code; the bot data registry expects the new table even while delivery is disabled. For rollback, disable notification workers first. Rolling application code back while leaving the additive v17 table and trigger in place is safe for reward creation, but pending rows will accumulate. Dropping the trigger/table is destructive and should only be considered after a backup and explicit operational review.
+Migrations are not idempotent. The launcher and preflight intentionally never modify the database. Deploy schema v21 before running v21 application code. For rollback, stop the bot before rolling application code back. Leaving the additive registry tables in place is safe; dropping them discards historical guild identity and should only be considered after a backup and explicit operational review.
+
+After applying the migration and starting the bot, inspect only the new registry tables:
+
+```bash
+psql "dbname=gostudy user=gostudy host=127.0.0.1" \
+  --command 'SELECT guildid, name, active, last_synced_at FROM gostudy_guilds ORDER BY guildid;'
+
+psql "dbname=gostudy user=gostudy host=127.0.0.1" \
+  --command 'SELECT guildid, count(*) FROM gostudy_guild_emojis WHERE available GROUP BY guildid ORDER BY guildid;'
+
+psql "dbname=gostudy user=gostudy host=127.0.0.1" \
+  --command 'SELECT guildid, count(*) FROM gostudy_guild_stickers WHERE available GROUP BY guildid ORDER BY guildid;'
+```
 
 ## Verification and troubleshooting
 
@@ -171,6 +184,16 @@ Each bot process/shard may poll the PostgreSQL outbox. Short transactions use ac
 
 Delivery attempts are durable and **at least once**, not exactly once. If Discord accepts a DM but the process exits before `delivered_at` is committed, the lease eventually expires and the notification may be sent again. The bot intentionally does not search private message history to conceal this unavoidable acknowledgement gap.
 
+## Discord guild registry
+
+The command-free Guild Registry module stores a normalized public/server-level view of every Discord guild the bot can currently see: guild ID, name, icon and banner hashes, Discord server description, Discord-provided member count, active state, and first-seen/last-synced timestamps. It also stores guild-owned emoji IDs, names, animation and availability state, plus guild sticker IDs, names, descriptions, format/type values, and availability state.
+
+The registry reconciles all connected guilds whenever the bot becomes ready, and refreshes immediately on guild join, guild removal, guild metadata update, emoji update, and sticker update. The pinned `discord.py` version supports both emoji and sticker update events. Syncs are atomic, serialized per guild rather than globally, and reject stale observations so closely timed events cannot regress newer metadata. A failure for one guild during startup is logged and does not stop reconciliation of the remaining guilds.
+
+Guild removal marks the guild inactive and its known emojis/stickers unavailable; rows are not hard-deleted. Rejoining marks the guild active and an authoritative full sync restores assets that are present again under the same Discord IDs. Deleted or inaccessible Discord assets are represented only by `available = false`; they are never copied.
+
+The registry does **not** collect member or user membership lists, messages, channels, roles, invites, audit logs, media bytes, or camera data. It never chunks members for this feature. Discord CDN URLs are not persisted: only bounded Discord asset hashes/keys are stored, so a future web application can resolve current media URLs when needed.
+
 ## Current Go Study behavior
 
-The bot includes Discord login, IPC registry integration, camera-gated verified study tracking, verified hourly rewards, a reward catalog, per-user inventory, and a durable reward-notification outbox on PostgreSQL schema version 17. Notification delivery does not change study verification, reward selection, or inventory behavior.
+The bot includes Discord login, IPC registry integration, camera-gated verified study tracking, verified hourly rewards, a reward catalog, per-user inventory, a durable reward-notification outbox, Chalk currency primitives, and the Discord Guild Registry on PostgreSQL schema version 21. Guild Registry sync does not change study verification, rewards, inventory, or Chalk behavior.

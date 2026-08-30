@@ -1,4 +1,4 @@
-"""Disposable PostgreSQL integration tests for Go Study Chalk schema v20.
+"""Disposable PostgreSQL integration tests for Go Study Chalk schema v21.
 
 The tests commit immutable ledger rows and are deliberately double-gated:
 
@@ -49,7 +49,7 @@ MIGRATION_WRITES_ALLOWED = (
 
 @unittest.skipUnless(
     TEST_DATABASE_URL and WRITES_ALLOWED,
-    'requires an explicitly authorized disposable PostgreSQL schema v20 database',
+    'requires an explicitly authorized disposable PostgreSQL schema v21 database',
 )
 class ChalkConcurrencyIntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
@@ -63,9 +63,9 @@ class ChalkConcurrencyIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     'SELECT version FROM VersionHistory ORDER BY time DESC LIMIT 1'
                 )
                 row = await cursor.fetchone()
-        if row is None or row[0] != 20:
+        if row is None or row[0] != 21:
             await self.pool_context.__aexit__(None, None, None)
-            raise unittest.SkipTest('disposable database is not schema version 20')
+            raise unittest.SkipTest('disposable database is not schema version 21')
 
         self.data = GoStudyChalkData()
         self.data.bind(self.connector)
@@ -317,7 +317,7 @@ class ChalkMigrationIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.schema_v20 = (ROOT / 'data/schema.sql').read_text(encoding='utf-8')
+        cls.schema_v21 = (ROOT / 'data/schema.sql').read_text(encoding='utf-8')
         cls.migration_v17_v18 = (
             ROOT / 'data/migration/v17-v18/migration.sql'
         ).read_text(encoding='utf-8')
@@ -327,6 +327,20 @@ class ChalkMigrationIntegrationTests(unittest.IsolatedAsyncioTestCase):
         cls.migration_v19_v20 = (
             ROOT / 'data/migration/v19-v20/migration.sql'
         ).read_text(encoding='utf-8')
+
+        registry_start = cls.schema_v21.index(
+            '-- Go Study Discord guild registry {{{'
+        )
+        registry_end = cls.schema_v21.index(
+            '-- }}}', registry_start
+        ) + len('-- }}}')
+        cls.schema_v20 = (
+            cls.schema_v21[:registry_start] + cls.schema_v21[registry_end:]
+        ).replace(
+            "INSERT INTO VersionHistory (version, author) VALUES (21, 'Initial Creation');",
+            "INSERT INTO VersionHistory (version, author) VALUES (20, 'Initial Creation');",
+            1,
+        )
 
         purchase_start = cls.schema_v20.index(
             '-- Go Study Chalk board purchase API {{{'

@@ -1,5 +1,5 @@
 CONFIG_FILE = "config/bot.conf"
-DATA_VERSION = 20
+DATA_VERSION = 21
 
 MAX_COINS = 2147483647 - 1
 

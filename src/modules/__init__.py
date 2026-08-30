@@ -23,6 +23,7 @@ active = [
     '.video_channels',
     '.gostudy_rewards',
     '.gostudy_chalk',
+    '.gostudy_guild_registry',
     '.meta',
     '.sponsors',
 ]
