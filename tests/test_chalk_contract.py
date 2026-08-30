@@ -110,9 +110,9 @@ class ChalkSchemaContractTests(unittest.TestCase):
         self.assertIn('BEFORE TRUNCATE', self.migration)
         self.assertIn('create a compensating/reversal transaction instead', self.migration)
 
-    def test_fresh_schema_declares_version_21(self):
+    def test_fresh_schema_declares_version_22(self):
         self.assertIn(
-            "INSERT INTO VersionHistory (version, author) VALUES (21,",
+            "INSERT INTO VersionHistory (version, author) VALUES (22,",
             self.schema,
         )
 

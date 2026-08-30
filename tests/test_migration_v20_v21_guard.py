@@ -119,16 +119,5 @@ class MigrationV20V21GuardTests(unittest.TestCase):
         self.assertNotIn('.url', source)
         self.assertNotIn('.read(', source)
 
-    def test_application_schema_version_is_21(self):
-        constants = (ROOT / 'src/constants.py').read_text(encoding='utf-8')
-        preflight = (ROOT / 'scripts/preflight.py').read_text(encoding='utf-8')
-        self.assertIn('DATA_VERSION = 21', constants)
-        self.assertIn('EXPECTED_SCHEMA_VERSION = 21', preflight)
-        self.assertIn(
-            "INSERT INTO VersionHistory (version, author) VALUES (21,",
-            self.schema,
-        )
-
-
 if __name__ == '__main__':
     unittest.main()

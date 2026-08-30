@@ -1,4 +1,4 @@
-"""Disposable PostgreSQL integration tests for Go Study Chalk schema v21.
+"""Disposable PostgreSQL integration tests for Go Study Chalk schema v22.
 
 The tests commit immutable ledger rows and are deliberately double-gated:
 
@@ -49,7 +49,7 @@ MIGRATION_WRITES_ALLOWED = (
 
 @unittest.skipUnless(
     TEST_DATABASE_URL and WRITES_ALLOWED,
-    'requires an explicitly authorized disposable PostgreSQL schema v21 database',
+    'requires an explicitly authorized disposable PostgreSQL schema v22 database',
 )
 class ChalkConcurrencyIntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
@@ -63,9 +63,9 @@ class ChalkConcurrencyIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     'SELECT version FROM VersionHistory ORDER BY time DESC LIMIT 1'
                 )
                 row = await cursor.fetchone()
-        if row is None or row[0] != 21:
+        if row is None or row[0] != 22:
             await self.pool_context.__aexit__(None, None, None)
-            raise unittest.SkipTest('disposable database is not schema version 21')
+            raise unittest.SkipTest('disposable database is not schema version 22')
 
         self.data = GoStudyChalkData()
         self.data.bind(self.connector)
@@ -317,7 +317,7 @@ class ChalkMigrationIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.schema_v21 = (ROOT / 'data/schema.sql').read_text(encoding='utf-8')
+        schema_v22 = (ROOT / 'data/schema.sql').read_text(encoding='utf-8')
         cls.migration_v17_v18 = (
             ROOT / 'data/migration/v17-v18/migration.sql'
         ).read_text(encoding='utf-8')
@@ -327,6 +327,20 @@ class ChalkMigrationIntegrationTests(unittest.IsolatedAsyncioTestCase):
         cls.migration_v19_v20 = (
             ROOT / 'data/migration/v19-v20/migration.sql'
         ).read_text(encoding='utf-8')
+
+        privilege_start = schema_v22.index(
+            '-- Go Study Discord guild registry runtime privileges {{{'
+        )
+        privilege_end = schema_v22.index(
+            '-- }}}', privilege_start
+        ) + len('-- }}}')
+        cls.schema_v21 = (
+            schema_v22[:privilege_start] + schema_v22[privilege_end:]
+        ).replace(
+            "INSERT INTO VersionHistory (version, author) VALUES (22, 'Initial Creation');",
+            "INSERT INTO VersionHistory (version, author) VALUES (21, 'Initial Creation');",
+            1,
+        )
 
         registry_start = cls.schema_v21.index(
             '-- Go Study Discord guild registry {{{'

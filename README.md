@@ -44,14 +44,15 @@ uv pip sync requirements.txt
 
 ### Create a fresh database
 
-Create a dedicated PostgreSQL role and database. Enter the role password interactively; do not put it in shell history or source control.
+Create a dedicated PostgreSQL owner role and database, and ensure the `lion` runtime role referenced by the schema exists. Enter role passwords interactively; do not put them in shell history or source control.
 
 ```bash
 sudo -u postgres createuser --pwprompt gostudy
+sudo -u postgres createuser --pwprompt lion
 sudo -u postgres createdb --owner=gostudy gostudy
 ```
 
-For a new, empty database, load `data/schema.sql` exactly once. It already represents schema version 21, so do not replay any historical migration after it.
+For a new, empty database, load `data/schema.sql` exactly once. It already represents schema version 22, so do not replay any historical migration after it.
 
 ```bash
 psql "dbname=gostudy user=gostudy host=127.0.0.1" \
@@ -64,7 +65,7 @@ psql "dbname=gostudy user=gostudy host=127.0.0.1" \
   --command 'SELECT version FROM VersionHistory ORDER BY time DESC LIMIT 1;'
 ```
 
-The verification command must print `21`.
+The verification command must print `22`.
 
 ### Configure local runtime files
 
@@ -145,7 +146,17 @@ psql "dbname=gostudy user=gostudy host=127.0.0.1" \
 
 The v20-v21 migration creates three initially empty guild-registry tables. It does not copy historical guild data, download Discord media, or touch existing StudyLion/Go Study product tables. The bot's next ready/startup event performs the initial authoritative reconciliation for every currently connected guild.
 
-Migrations are not idempotent. The launcher and preflight intentionally never modify the database. Deploy schema v21 before running v21 application code. For rollback, stop the bot before rolling application code back. Leaving the additive registry tables in place is safe; dropping them discards historical guild identity and should only be considered after a backup and explicit operational review.
+If and only if the version check reports version 21, apply the v21-v22 permissions hotfix:
+
+```bash
+psql "dbname=gostudy user=gostudy host=127.0.0.1" \
+  --set ON_ERROR_STOP=on \
+  --file data/migration/v21-v22/migration.sql
+```
+
+The v21-v22 migration grants the runtime role `lion` only `SELECT`, `INSERT`, and `UPDATE` on the three guild-registry tables, while explicitly withholding `DELETE` and `TRUNCATE`. Its `GRANT` statements are safe when those same privileges were already granted manually.
+
+Migrations are not idempotent. The launcher and preflight intentionally never modify the database. Deploy schema v22 before running v22 application code. For rollback, stop the bot before rolling application code back. Leaving the additive registry tables in place is safe; dropping them discards historical guild identity and should only be considered after a backup and explicit operational review.
 
 After applying the migration and starting the bot, inspect only the new registry tables:
 
@@ -196,4 +207,4 @@ The registry does **not** collect member or user membership lists, messages, cha
 
 ## Current Go Study behavior
 
-The bot includes Discord login, IPC registry integration, camera-gated verified study tracking, verified hourly rewards, a reward catalog, per-user inventory, a durable reward-notification outbox, Chalk currency primitives, and the Discord Guild Registry on PostgreSQL schema version 21. Guild Registry sync does not change study verification, rewards, inventory, or Chalk behavior.
+The bot includes Discord login, IPC registry integration, camera-gated verified study tracking, verified hourly rewards, a reward catalog, per-user inventory, a durable reward-notification outbox, Chalk currency primitives, and the Discord Guild Registry on PostgreSQL schema version 22. Guild Registry sync does not change study verification, rewards, inventory, or Chalk behavior.

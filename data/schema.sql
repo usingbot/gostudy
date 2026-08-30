@@ -4,7 +4,7 @@ CREATE TABLE VersionHistory(
   time TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL,
   author TEXT
 );
-INSERT INTO VersionHistory (version, author) VALUES (21, 'Initial Creation');
+INSERT INTO VersionHistory (version, author) VALUES (22, 'Initial Creation');
 
 
 CREATE OR REPLACE FUNCTION update_timestamp_column()
@@ -170,6 +170,26 @@ CREATE TABLE public.gostudy_guild_stickers(
 );
 CREATE INDEX gostudy_guild_stickers_guilds
   ON public.gostudy_guild_stickers (guildid, stickerid);
+-- }}}
+
+-- Go Study Discord guild registry runtime privileges {{{
+REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE
+  public.gostudy_guilds,
+  public.gostudy_guild_emojis,
+  public.gostudy_guild_stickers
+FROM PUBLIC;
+
+REVOKE DELETE, TRUNCATE ON TABLE
+  public.gostudy_guilds,
+  public.gostudy_guild_emojis,
+  public.gostudy_guild_stickers
+FROM lion;
+
+GRANT SELECT, INSERT, UPDATE ON TABLE
+  public.gostudy_guilds,
+  public.gostudy_guild_emojis,
+  public.gostudy_guild_stickers
+TO lion;
 -- }}}
 
 -- User configuration data {{{

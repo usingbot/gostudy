@@ -47,7 +47,7 @@ MIGRATION_WRITES_ALLOWED = (
 
 @unittest.skipUnless(
     TEST_DATABASE_URL and WRITES_ALLOWED,
-    'requires an explicitly authorized disposable PostgreSQL schema v21 database',
+    'requires an explicitly authorized disposable PostgreSQL schema v22 database',
 )
 class GuildRegistryPostgresTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
@@ -69,9 +69,9 @@ class GuildRegistryPostgresTests(unittest.IsolatedAsyncioTestCase):
                     'SELECT version FROM VersionHistory ORDER BY time DESC LIMIT 1'
                 )
                 row = await cursor.fetchone()
-        if row is None or row['version'] != 21:
+        if row is None or row['version'] != 22:
             await self.pool_context.__aexit__(None, None, None)
-            raise unittest.SkipTest('disposable database is not schema version 21')
+            raise unittest.SkipTest('disposable database is not schema version 22')
 
     async def asyncTearDown(self):
         async with self.connector.connection() as conn:
@@ -282,17 +282,45 @@ class GuildRegistryPostgresTests(unittest.IsolatedAsyncioTestCase):
 class GuildRegistryMigrationPostgresTests(unittest.IsolatedAsyncioTestCase):
     @classmethod
     def setUpClass(cls):
-        schema_v21 = (ROOT / 'data/schema.sql').read_text(encoding='utf-8')
-        marker = '-- Go Study Discord guild registry {{{'
-        start = schema_v21.index(marker)
-        end = schema_v21.index('-- }}}', start) + len('-- }}}')
-        cls.schema_v20 = (schema_v21[:start] + schema_v21[end:]).replace(
+        cls.tables = (
+            'public.gostudy_guilds',
+            'public.gostudy_guild_emojis',
+            'public.gostudy_guild_stickers',
+        )
+        cls.schema_v22 = (ROOT / 'data/schema.sql').read_text(encoding='utf-8')
+
+        privilege_marker = (
+            '-- Go Study Discord guild registry runtime privileges {{{'
+        )
+        privilege_start = cls.schema_v22.index(privilege_marker)
+        privilege_end = cls.schema_v22.index(
+            '-- }}}', privilege_start
+        ) + len('-- }}}')
+        cls.schema_v21 = (
+            cls.schema_v22[:privilege_start] + cls.schema_v22[privilege_end:]
+        ).replace(
+            "INSERT INTO VersionHistory (version, author) VALUES (22, 'Initial Creation');",
+            "INSERT INTO VersionHistory (version, author) VALUES (21, 'Initial Creation');",
+            1,
+        )
+
+        registry_marker = '-- Go Study Discord guild registry {{{'
+        registry_start = cls.schema_v21.index(registry_marker)
+        registry_end = cls.schema_v21.index(
+            '-- }}}', registry_start
+        ) + len('-- }}}')
+        cls.schema_v20 = (
+            cls.schema_v21[:registry_start] + cls.schema_v21[registry_end:]
+        ).replace(
             "INSERT INTO VersionHistory (version, author) VALUES (21, 'Initial Creation');",
             "INSERT INTO VersionHistory (version, author) VALUES (20, 'Initial Creation');",
             1,
         )
-        cls.migration = (
+        cls.migration_v20_v21 = (
             ROOT / 'data/migration/v20-v21/migration.sql'
+        ).read_text(encoding='utf-8')
+        cls.migration_v21_v22 = (
+            ROOT / 'data/migration/v21-v22/migration.sql'
         ).read_text(encoding='utf-8')
 
     async def asyncSetUp(self):
@@ -303,6 +331,20 @@ class GuildRegistryMigrationPostgresTests(unittest.IsolatedAsyncioTestCase):
         )
         async with self.admin.cursor() as cursor:
             await cursor.execute(
+                "SELECT rolsuper FROM pg_roles WHERE rolname = 'lion'"
+            )
+            role = await cursor.fetchone()
+            if role is None:
+                await self.admin.close()
+                raise unittest.SkipTest(
+                    'migration target does not define the runtime role lion'
+                )
+            if role[0]:
+                await self.admin.close()
+                raise unittest.SkipTest(
+                    'runtime role lion must not be a superuser for ACL verification'
+                )
+            await cursor.execute(
                 sql.SQL("CREATE DATABASE {} TEMPLATE template0 ENCODING 'UTF8'").format(
                     sql.Identifier(self.database_name)
                 )
@@ -311,6 +353,145 @@ class GuildRegistryMigrationPostgresTests(unittest.IsolatedAsyncioTestCase):
             MIGRATION_ADMIN_URL,
             dbname=self.database_name,
         )
+
+    async def assert_privilege_matrix(self, cursor):
+        expected = {
+            'SELECT': True,
+            'INSERT': True,
+            'UPDATE': True,
+            'DELETE': False,
+            'TRUNCATE': False,
+        }
+        for table in self.tables:
+            for privilege, allowed in expected.items():
+                await cursor.execute(
+                    'SELECT has_table_privilege(%s, %s, %s)',
+                    ('lion', table, privilege),
+                )
+                self.assertEqual(
+                    (await cursor.fetchone())[0],
+                    allowed,
+                    f'lion {privilege} on {table}',
+                )
+
+            for privilege in ('INSERT', 'UPDATE', 'DELETE', 'TRUNCATE'):
+                await cursor.execute(
+                    """
+                    SELECT EXISTS (
+                      SELECT 1
+                      FROM pg_class AS relation
+                      JOIN pg_namespace AS namespace
+                        ON namespace.oid = relation.relnamespace
+                      CROSS JOIN LATERAL aclexplode(
+                        COALESCE(
+                          relation.relacl,
+                          acldefault('r', relation.relowner)
+                        )
+                      ) AS acl
+                      WHERE namespace.nspname = 'public'
+                        AND relation.relname = %s
+                        AND acl.grantee = 0
+                        AND acl.privilege_type = %s
+                    )
+                    """,
+                    (table.removeprefix('public.'), privilege),
+                )
+                self.assertFalse(
+                    (await cursor.fetchone())[0],
+                    f'PUBLIC unexpectedly has {privilege} on {table}',
+                )
+
+            await cursor.execute(
+                """
+                SELECT pg_get_userbyid(relation.relowner)
+                FROM pg_class AS relation
+                WHERE relation.oid = %s::regclass
+                """,
+                (table,),
+            )
+            self.assertNotEqual((await cursor.fetchone())[0], 'lion')
+
+    async def exercise_runtime_as_lion(self):
+        runtime_url = make_conninfo(
+            self.database_url,
+            options='-c role=lion',
+        )
+        connector = Connector(runtime_url)
+        async with connector.open():
+            data = GoStudyGuildRegistryData()
+            data.bind(connector)
+            await data.init()
+
+            guildid = 850000000000000000 + random.SystemRandom().randrange(10**12)
+            observed_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+            snapshot = GuildSnapshot(
+                guildid=guildid,
+                name='Migration runtime check',
+                icon_hash=None,
+                banner_hash=None,
+                description=None,
+                member_count=1,
+                emojis=(GuildEmojiSnapshot(
+                    emojiid=guildid + 1,
+                    guildid=guildid,
+                    name='runtime',
+                    animated=False,
+                    available=True,
+                    observed_at=observed_at,
+                ),),
+                stickers=(GuildStickerSnapshot(
+                    stickerid=guildid + 2,
+                    guildid=guildid,
+                    name='runtime',
+                    description=None,
+                    format_type=1,
+                    sticker_type=2,
+                    available=True,
+                    observed_at=observed_at,
+                ),),
+                observed_at=observed_at,
+            )
+            self.assertTrue(await data.sync_guild(snapshot))
+
+            inactive_snapshot = GuildSnapshot(
+                guildid=snapshot.guildid,
+                name=snapshot.name,
+                icon_hash=snapshot.icon_hash,
+                banner_hash=snapshot.banner_hash,
+                description=snapshot.description,
+                member_count=snapshot.member_count,
+                emojis=snapshot.emojis,
+                stickers=snapshot.stickers,
+                observed_at=observed_at + timedelta(seconds=1),
+            )
+            self.assertTrue(await data.mark_guild_inactive(inactive_snapshot))
+
+            async with connector.connection() as conn:
+                async with conn.cursor() as cursor:
+                    await cursor.execute(
+                        """
+                        SELECT
+                          guild.active,
+                          emoji.available AS emoji_available,
+                          sticker.available AS sticker_available
+                        FROM public.gostudy_guilds AS guild
+                        JOIN public.gostudy_guild_emojis AS emoji
+                          ON emoji.guildid = guild.guildid
+                        JOIN public.gostudy_guild_stickers AS sticker
+                          ON sticker.guildid = guild.guildid
+                        WHERE guild.guildid = %s
+                        """,
+                        (guildid,),
+                    )
+                    row = await cursor.fetchone()
+                    self.assertEqual(
+                        (
+                            row['active'],
+                            row['emoji_available'],
+                            row['sticker_available'],
+                        ),
+                        (False, False, False),
+                    )
 
     async def asyncTearDown(self):
         if not self.admin.closed:
@@ -338,7 +519,7 @@ class GuildRegistryMigrationPostgresTests(unittest.IsolatedAsyncioTestCase):
         try:
             async with conn.cursor() as cursor:
                 await cursor.execute(self.schema_v20)
-                await cursor.execute(self.migration)
+                await cursor.execute(self.migration_v20_v21)
                 await cursor.execute(
                     'SELECT version FROM VersionHistory ORDER BY time DESC LIMIT 1'
                 )
@@ -352,12 +533,81 @@ class GuildRegistryMigrationPostgresTests(unittest.IsolatedAsyncioTestCase):
                     self.assertIsNotNone((await cursor.fetchone())[0])
 
                 with self.assertRaises(psycopg.Error):
-                    await cursor.execute(self.migration)
+                    await cursor.execute(self.migration_v20_v21)
                 await conn.rollback()
                 await cursor.execute(
                     'SELECT version FROM VersionHistory ORDER BY time DESC LIMIT 1'
                 )
                 self.assertEqual((await cursor.fetchone())[0], 21)
+        finally:
+            await conn.close()
+
+    async def test_version_21_upgrades_to_22_with_exact_runtime_acl(self):
+        conn = await psycopg.AsyncConnection.connect(
+            self.database_url,
+            autocommit=True,
+        )
+        try:
+            async with conn.cursor() as cursor:
+                await cursor.execute(self.schema_v21)
+                await cursor.execute(self.migration_v21_v22)
+                await cursor.execute(
+                    'SELECT version FROM VersionHistory ORDER BY time DESC LIMIT 1'
+                )
+                self.assertEqual((await cursor.fetchone())[0], 22)
+                await self.assert_privilege_matrix(cursor)
+
+                with self.assertRaises(psycopg.Error):
+                    await cursor.execute(self.migration_v21_v22)
+                await conn.rollback()
+                await cursor.execute(
+                    'SELECT version FROM VersionHistory ORDER BY time DESC LIMIT 1'
+                )
+                self.assertEqual((await cursor.fetchone())[0], 22)
+
+            await self.exercise_runtime_as_lion()
+        finally:
+            await conn.close()
+
+    async def test_upgrade_accepts_already_granted_runtime_acl(self):
+        conn = await psycopg.AsyncConnection.connect(
+            self.database_url,
+            autocommit=True,
+        )
+        try:
+            async with conn.cursor() as cursor:
+                await cursor.execute(self.schema_v21)
+                await cursor.execute(
+                    """
+                    GRANT SELECT, INSERT, UPDATE ON TABLE
+                      public.gostudy_guilds,
+                      public.gostudy_guild_emojis,
+                      public.gostudy_guild_stickers
+                    TO lion
+                    """
+                )
+                await cursor.execute(self.migration_v21_v22)
+                await cursor.execute(
+                    'SELECT version FROM VersionHistory ORDER BY time DESC LIMIT 1'
+                )
+                self.assertEqual((await cursor.fetchone())[0], 22)
+                await self.assert_privilege_matrix(cursor)
+        finally:
+            await conn.close()
+
+    async def test_fresh_schema_is_version_22_with_exact_runtime_acl(self):
+        conn = await psycopg.AsyncConnection.connect(
+            self.database_url,
+            autocommit=True,
+        )
+        try:
+            async with conn.cursor() as cursor:
+                await cursor.execute(self.schema_v22)
+                await cursor.execute(
+                    'SELECT version FROM VersionHistory ORDER BY time DESC LIMIT 1'
+                )
+                self.assertEqual((await cursor.fetchone())[0], 22)
+                await self.assert_privilege_matrix(cursor)
         finally:
             await conn.close()
 
